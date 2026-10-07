@@ -1,12 +1,14 @@
-out/        
-cache/    
-broadcast/  
-artifacts/   
+out/
+cache/
+broadcast/
+artifacts/
 
-.env       
-.env.*       
-*.key       
+.env
+.env.*
+!.env.example
 
-.vscode/ 
-.idea/    
-.DS_Store   
+*.key
+
+.vscode/
+.idea/
+.DS_Store

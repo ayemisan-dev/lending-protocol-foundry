@@ -1,0 +1,14 @@
+{
+  "lib/chainlink-evm": {
+    "tag": {
+      "name": "contracts-v1.5.0",
+      "rev": "86aa5a1d34b20eda8d18fe6eb0e4882948e545ba"
+    }
+  },
+  "lib/openzeppelin-contracts": {
+    "tag": {
+      "name": "v5.7.0",
+      "rev": "cab19933c33c2ad1d4c7a84864a3601dddfd16f3"
+    }
+  }
+}
