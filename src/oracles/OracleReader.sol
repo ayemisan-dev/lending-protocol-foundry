@@ -46,7 +46,7 @@ contract OracleReader is Ownable {
         }
 
         try AggregatorV3Interface(priceFeed_).decimals() returns (uint8 decimals_) {
-            if (decimals_ > 36) {
+            if (decimals_ > 18) {
                 revert InvalidFeedDecimals();
             }
         } catch {
@@ -98,7 +98,7 @@ contract OracleReader is Ownable {
     }
 
     function _normalizePrice(uint256 price, uint8 feedDecimals) internal pure returns (uint256) {
-        if (feedDecimals > 36) {
+        if (feedDecimals > 18) {
             revert InvalidFeedDecimals();
         }
 
@@ -106,23 +106,12 @@ contract OracleReader is Ownable {
             return price;
         }
 
-        if (feedDecimals < 18) {
-            uint256 scale = 10 ** uint256(18 - feedDecimals);
+        uint256 scale = 10 ** uint256(18 - feedDecimals);
 
-            if (price > type(uint256).max / scale) {
-                revert PriceNormalizationOverflow();
-            }
-
-            return price * scale;
+        if (price > type(uint256).max / scale) {
+            revert PriceNormalizationOverflow();
         }
 
-        uint256 divisor = 10 ** uint256(feedDecimals - 18);
-        uint256 normalizedPrice = price / divisor;
-
-        if (normalizedPrice == 0) {
-            revert InvalidPrice();
-        }
-
-        return normalizedPrice;
+        return price * scale;
     }
 }

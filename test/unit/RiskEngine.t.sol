@@ -95,7 +95,7 @@ contract RiskEngineTest is Test {
     }
 
     function _setPosition(address user, address asset, uint256 supplied, uint256 borrowed) internal {
-        // Test helper will be connected to the mock lending pool
+        lendingPool.setPosition(user, asset, supplied, borrowed);
     }
 
     function _setBorrowed(address user, address asset, uint256 amount) internal {
@@ -154,6 +154,27 @@ contract RiskEngineTest is Test {
         uint256 value = riskEngine.getAssetUsdValue(address(usdcToken), 1);
 
         assertEq(value, 1e12);
+    }
+
+    function test_GetAssetUsdValueCanRoundPositiveAmountToZero() public {
+        MockAggregatorV3 tinyPriceFeed = new MockAggregatorV3(18, 1, 1, block.timestamp, 1);
+        vm.prank(owner);
+        oracleReader.setPriceFeed(address(usdcToken), address(tinyPriceFeed));
+        uint256 value = riskEngine.getAssetUsdValue(address(usdcToken), 1);
+        assertEq(value, 0);
+    }
+
+    function test_TotalDebtValueRoundsPositiveDebtUpToMinimumUnit() public {
+        MockAggregatorV3 tinyPriceFeed = new MockAggregatorV3(18, 1, 1, block.timestamp, 1);
+
+        vm.prank(owner);
+        oracleReader.setPriceFeed(address(usdcToken), address(tinyPriceFeed));
+
+        address user = makeAddr("roundingUser");
+
+        lendingPool.setPosition(user, address(usdcToken), 0, 1);
+        uint256 debtValue = riskEngine.getTotalDebtValue(user);
+        assertEq(debtValue, 1);
     }
 
     function test_GetTotalCollateralValueAcrossMultipleAssets() public {

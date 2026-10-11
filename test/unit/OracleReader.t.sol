@@ -54,6 +54,12 @@ contract OracleReaderTest is Test {
         oracleReader.setPriceFeed(eth, address(0));
     }
 
+    function test_SetPriceRevertsWhenFeedDecimalsExceed18() public {
+        vm.prank(owner);
+        vm.expectRevert(OracleReader.InvalidFeedDecimals.selector);
+        oracleReader.setPriceFeed(wbtc, address(feed20));
+    }
+
     function test_GetPriceRevertsWhenFeedIsNotConfigured() public {
         vm.expectRevert(OracleReader.PriceFeedNotConfigured.selector);
         oracleReader.getPrice(address(0));
@@ -71,21 +77,6 @@ contract OracleReaderTest is Test {
         oracleReader.setPriceFeed(usdc, address(feed18));
         uint256 price = oracleReader.getPrice(usdc);
         assertEq(price, 2500e18);
-    }
-
-    function test_GetPriceNormalizesDecimalsGreaterThan18() public {
-        vm.prank(owner);
-        oracleReader.setPriceFeed(wbtc, address(feed20));
-        uint256 price = oracleReader.getPrice(wbtc);
-        assertEq(price, 2500e18);
-    }
-
-    function test_GetPriceRevertsWhenNormalizationRoundsPriceToZero() public {
-        MockAggregatorV3 tinyPriceFeed = new MockAggregatorV3(20, 1, 1, block.timestamp, 1);
-        vm.prank(owner);
-        oracleReader.setPriceFeed(wbtc, address(tinyPriceFeed));
-        vm.expectRevert(OracleReader.InvalidPrice.selector);
-        oracleReader.getPrice(wbtc);
     }
 
     function test_GetPriceRevertsWhenPriceIsZero() public {

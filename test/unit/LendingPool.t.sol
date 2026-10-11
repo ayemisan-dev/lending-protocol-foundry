@@ -10,6 +10,14 @@ import {RiskEngine} from "../../src/core/RiskEngine.sol";
 import {MockAggregatorV3} from "../../src/mocks/MockAggregatorV3.sol";
 import {FeeOnTransferMock} from "../../src/mocks/FeeOnTransferMock.sol";
 
+contract MockERC20SixDecimals is MockERC20 {
+    constructor() MockERC20("Mock USD Coin", "mUSDC") {}
+
+    function decimals() public pure override returns (uint8) {
+        return 6;
+    }
+}
+
 contract LendingPoolTest is Test {
     MockERC20 internal asset;
     LendingPool internal pool;
@@ -436,6 +444,67 @@ contract LendingPoolTest is Test {
         assertEq(position.borrowed, borrowAmount);
     }
 
+    function test_BorrowWithSixDecimalAssetUsesCorrectTokenScale() public {
+        MockERC20SixDecimals usdc = new MockERC20SixDecimals();
+        MockAggregatorV3 usdcFeed = new MockAggregatorV3(8, 1e8, 1, block.timestamp, 1);
+
+        vm.startPrank(owner);
+        config.configureAsset(address(usdc), true, 8000, 8500, 500);
+        oracleReader.setPriceFeed(address(usdc), address(usdcFeed));
+        vm.stopPrank();
+
+        uint256 suppliedAmount = 100e6;
+        uint256 borrowAmount = 80e6;
+        usdc.mint(alice, suppliedAmount);
+
+        vm.startPrank(alice);
+        usdc.approve(address(pool), suppliedAmount);
+        pool.deposit(address(usdc), suppliedAmount);
+        // 100 USDC supplied, 80% LTV: borrowing 80 USDC should succeed.
+        usdc.mint(address(pool), borrowAmount);
+        pool.borrow(address(usdc), borrowAmount);
+        vm.stopPrank();
+
+        LendingPool.UserPosition memory position = pool.getUserPosition(alice, address(usdc));
+
+        assertEq(position.supplied, suppliedAmount);
+        assertEq(position.borrowed, borrowAmount);
+        assertEq(usdc.balanceOf(alice), borrowAmount);
+    }
+
+    function test_BorrowRevertsWhenTinyPriceExceedsBorrowingCapacity() public {
+        MockERC20SixDecimals usdc = new MockERC20SixDecimals();
+        MockAggregatorV3 tinyPriceFeed = new MockAggregatorV3(18, 1, 1, block.timestamp, 1);
+
+        vm.startPrank(owner);
+        config.configureAsset(address(usdc), true, 8000, 8500, 500);
+        oracleReader.setPriceFeed(address(usdc), address(tinyPriceFeed));
+        vm.stopPrank();
+
+        // Supply $100 of collateral at $1 per token.
+        uint256 collateralAmount = 100 ether;
+        asset.mint(alice, collateralAmount);
+        vm.startPrank(alice);
+        asset.approve(address(pool), collateralAmount);
+        pool.deposit(address(asset), collateralAmount);
+        vm.stopPrank();
+
+        // At $1e-18 per USDC, this amount is worth $81.
+        uint256 borrowAmount = 81e24; //81e24 basic unit = 81e18 USDC
+        usdc.mint(address(pool), borrowAmount);
+        uint256 aliceBalanceBefore = usdc.balanceOf(alice);
+        uint256 poolBalanceBefore = usdc.balanceOf(address(pool));
+
+        vm.expectRevert(LendingPool.BorrowingCapacityExceeded.selector);
+        vm.prank(alice);
+        pool.borrow(address(usdc), borrowAmount);
+
+        LendingPool.UserPosition memory position = pool.getUserPosition(alice, address(usdc));
+        assertEq(position.borrowed, 0);
+        assertEq(usdc.balanceOf(alice), aliceBalanceBefore);
+        assertEq(usdc.balanceOf(address(pool)), poolBalanceBefore);
+    }
+
     function test_BorrowRevertsWhenAmountIsZero() public {
         vm.prank(alice);
         vm.expectRevert(LendingPool.InvalidAmount.selector);
@@ -487,6 +556,39 @@ contract LendingPoolTest is Test {
         assertEq(asset.balanceOf(address(pool)), suppliedAmount);
         assertEq(position.supplied, suppliedAmount);
         assertEq(position.borrowed, 0);
+    }
+
+    function test_BorrowWithTinyDebtValueUsesMinimumPositiveUsdUnit() public {
+        MockERC20SixDecimals usdc = new MockERC20SixDecimals();
+        // A raw answer of 1 with 18 feed decimals represents $1e-18.
+        MockAggregatorV3 tinyPriceFeed = new MockAggregatorV3(18, 1, 1, block.timestamp, 1);
+
+        vm.startPrank(owner);
+        config.configureAsset(address(usdc), true, 8000, 8500, 500);
+        oracleReader.setPriceFeed(address(usdc), address(tinyPriceFeed));
+        vm.stopPrank();
+        uint256 collateralAmount = 100e18;
+        usdc.mint(alice, collateralAmount);
+
+        vm.startPrank(alice);
+        usdc.approve(address(pool), collateralAmount);
+        pool.deposit(address(usdc), collateralAmount);
+        vm.stopPrank();
+
+        // One USDC base unit is worth less than the smallest USD unit
+        // used by the RiskEngine calculation.
+        uint256 borrowAmount = 1; //1 base unit = 1e-24 USD
+        usdc.mint(address(pool), borrowAmount);
+        assertEq(riskEngine.getAssetUsdValue(address(usdc), borrowAmount), 0);
+
+        vm.prank(alice);
+        pool.borrow(address(usdc), borrowAmount);
+
+        LendingPool.UserPosition memory position = pool.getUserPosition(alice, address(usdc));
+
+        assertEq(position.borrowed, borrowAmount);
+        assertEq(usdc.balanceOf(alice), borrowAmount);
+        assertEq(riskEngine.getTotalDebtValue(alice), 1);
     }
 
     function test_BorrowSucceedsAtExactBorrowingPower() public {

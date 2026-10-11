@@ -83,6 +83,19 @@ contract RiskEngine {
         }
     }
 
+    function _calculateDebtUsdValue(address asset, uint256 amount) internal view returns (uint256) {
+        if (amount == 0) return 0;
+
+        uint8 tokenDecimals = IERC20Metadata(asset).decimals();
+
+        if (tokenDecimals > 77) revert InvalidTokenDecimals();
+
+        uint256 price = oracleReader.getPrice(asset);
+        uint256 tokenScale = 10 ** uint256(tokenDecimals);
+
+        return Math.mulDiv(amount, price, tokenScale, Math.Rounding.Ceil);
+    }
+
     function getTotalDebtValue(address user) external view returns (uint256) {
         return _getTotalDebtValue(user);
     }
@@ -99,7 +112,7 @@ contract RiskEngine {
                 continue;
             }
 
-            totalValue += _calculateUsdValue(asset, position.borrowed);
+            totalValue += _calculateDebtUsdValue(asset, position.borrowed);
         }
     }
 
