@@ -1,18 +1,12 @@
 //SPDX-License-Identifier: MIT
 pragma solidity ^0.8.34;
-
 import {Test} from "forge-std/Test.sol";
 import {MockERC20} from "../../src/mocks/MockERC20.sol";
 import {OracleReader} from "../../src/oracles/OracleReader.sol";
 
 contract DependencyIntegrationTest is Test {
-    MockERC20 internal token;
-
-    function setUp() public {
-        token = new MockERC20("LendX Test Token", "LXTEST");
-    }
-
     function test_OpenZeppelinERC20Works() public {
+        MockERC20 token = new MockERC20("LendX Test Token", "LXTEST");
         address alice = address(0xA11CE);
         uint256 amount = 100 ether;
 
@@ -22,10 +16,8 @@ contract DependencyIntegrationTest is Test {
     }
 
     function test_ChainlinkInterfaceCanBeReferenced() public {
-        address feed = address(0x1234);
-
-        OracleReader reader = new OracleReader(feed);
-
-        assertEq(address(reader.priceFeed()), feed);
+        address owner = makeAddr("owner");
+        OracleReader reader = new OracleReader(owner, 1 hours);
+        assertEq(reader.owner(), owner);
     }
 }
