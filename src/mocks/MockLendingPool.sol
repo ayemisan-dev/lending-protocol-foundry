@@ -29,9 +29,13 @@ contract MockLendingPool is ILendingPool {
         position.supplied -= amount;
     }
 
-    function borrow(address, uint256) external override {}
+    function borrow(address, uint256) external pure override {
+        revert("No implementation");
+    }
 
-    function repay(address, uint256) external override {}
+    function repay(address, uint256) external pure override {
+        revert("No implementation");
+    }
 
     function getUserPosition(address user, address asset)
         external

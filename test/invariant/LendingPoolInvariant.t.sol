@@ -71,18 +71,8 @@ contract LendingPoolInvariantTest is Test {
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
     }
 
-    // -----------------------------------------------------------------
     // I1 — Token conservation
-    //
-    //     pool_balance + Σ borrowed == Σ supplied + poolSeedBalance
-    //
-    // Derivation:
-    //   deposit(x):    pool += x, supplied += x    (both sides +x)
-    //   withdraw(x):   pool -= x, supplied -= x    (both sides -x)
-    //   borrow(x):     pool -= x, borrowed += x    (LHS same, RHS same)
-    //   repay(x):      pool += x, borrowed -= x    (LHS same, RHS same)
-    //   ⇒ LHS - RHS is preserved at 0.
-    // -----------------------------------------------------------------
+    // pool_balance + Σ borrowed == Σ supplied + poolSeedBalance
     function invariant_TokenConservation() public view {
         uint256 poolBalance = asset.balanceOf(address(pool));
         uint256 totalSupplied;
@@ -97,15 +87,8 @@ contract LendingPoolInvariantTest is Test {
         assertEq(poolBalance + totalBorrowed, totalSupplied + poolSeedBalance, "I1: token conservation broken");
     }
 
-    // -----------------------------------------------------------------
     // I2 — Health-factor safety
-    //
-    //   Any actor with outstanding debt must have HF >= 1e18.
-    //
-    // Rationale: deposit / withdraw / borrow all enforce HF >= 1 for the
-    // acting user. Repay only improves HF. So no sequence of these four
-    // actions may leave any actor below the threshold.
-    // -----------------------------------------------------------------
+    // Any actor with outstanding debt must have HF >= 1e18.
     function invariant_HealthFactorSafety() public view {
         for (uint256 i = 0; i < actors.length; i++) {
             ILendingPool.UserPosition memory pos = pool.getUserPosition(actors[i], address(asset));
