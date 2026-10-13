@@ -7,11 +7,14 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {RiskEngine} from "./RiskEngine.sol";
 import {ProtocolConfig} from "./ProtocolConfig.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 contract LendingPool is ILendingPool, Ownable {
     using SafeERC20 for IERC20;
 
     mapping(address user => mapping(address asset => ILendingPool.UserPosition)) internal positions;
+    address public riskEngine;
+    ProtocolConfig public config;
 
     error InvalidAmount();
     error InsufficientSupply();
@@ -26,9 +29,17 @@ contract LendingPool is ILendingPool, Ownable {
     error ProtocolConfigAlreadySet();
     error ProtocolConfigNotConfigured();
     error RiskEngineNotConfigured();
+    error PositionNotLiquidatable();
+    error InsufficientCollateralForLiquidation();
 
-    address public riskEngine;
-    ProtocolConfig public config;
+    event LiquidationExecuted(
+        address indexed borrower,
+        address indexed liquidator,
+        address indexed debtAsset,
+        address collateralAsset,
+        uint256 debtRepaid,
+        uint256 collateralSeized
+    );
 
     constructor(address initialOwner) Ownable(initialOwner) {}
 
@@ -88,9 +99,7 @@ contract LendingPool is ILendingPool, Ownable {
 
     function withdraw(address asset, uint256 amount) external override {
         if (amount == 0) revert InvalidAmount();
-        if (riskEngine == address(0)) {
-            revert RiskEngineNotConfigured();
-        }
+        if (riskEngine == address(0)) revert RiskEngineNotConfigured();
 
         ILendingPool.UserPosition storage position = positions[msg.sender][asset];
         if (amount > position.supplied) revert InsufficientSupply();
@@ -101,49 +110,33 @@ contract LendingPool is ILendingPool, Ownable {
         // 2. Validate the health factor after the withdrawal.
         uint256 healthFactor = RiskEngine(riskEngine).getHealthFactor(msg.sender);
 
-        if (healthFactor < 1e18) {
-            revert HealthFactorTooLow();
-        }
+        if (healthFactor < 1e18) revert HealthFactorTooLow();
 
         // 3. Transfer collateral only after validation succeeds.
         IERC20(asset).safeTransfer(msg.sender, amount);
     }
 
     function borrow(address asset, uint256 amount) external override {
-        if (amount == 0) {
-            revert InvalidAmount();
-        }
-
-        if (riskEngine == address(0)) {
-            revert RiskEngineNotConfigured();
-        }
-
-        if (IERC20(asset).balanceOf(address(this)) < amount) {
-            revert InsufficientLiquidity();
-        }
+        if (amount == 0) revert InvalidAmount();
+        if (riskEngine == address(0)) revert RiskEngineNotConfigured();
+        if (IERC20(asset).balanceOf(address(this)) < amount) revert InsufficientLiquidity();
 
         uint256 currentDebtValue = RiskEngine(riskEngine).getTotalDebtValue(msg.sender);
         uint256 additionalDebtValue = RiskEngine(riskEngine).getAssetUsdValue(asset, amount);
         uint256 maxBorrowableValue = RiskEngine(riskEngine).getMaxBorrowableValue(msg.sender);
 
-        if (currentDebtValue + additionalDebtValue > maxBorrowableValue) {
-            revert BorrowingCapacityExceeded();
-        }
+        if (currentDebtValue + additionalDebtValue > maxBorrowableValue) revert BorrowingCapacityExceeded();
 
         positions[msg.sender][asset].borrowed += amount;
         IERC20(asset).safeTransfer(msg.sender, amount);
     }
 
     function repay(address asset, uint256 amount) external override {
-        if (amount == 0) {
-            revert InvalidAmount();
-        }
+        if (amount == 0) revert InvalidAmount();
 
         ILendingPool.UserPosition storage position = positions[msg.sender][asset];
 
-        if (amount > position.borrowed) {
-            revert RepayAmountExceedsDebt();
-        }
+        if (amount > position.borrowed) revert RepayAmountExceedsDebt();
 
         IERC20 token = IERC20(asset);
 
@@ -158,9 +151,7 @@ contract LendingPool is ILendingPool, Ownable {
         uint256 receivedAmount = balanceAfter - balanceBefore;
 
         // 4. Reject fee-on-transfer or otherwise short-paying tokens.
-        if (receivedAmount != amount) {
-            revert InvalidAmount();
-        }
+        if (receivedAmount != amount) revert InvalidAmount();
 
         // 5. Reduce debt only after validating the received amount.
         position.borrowed -= receivedAmount;
@@ -173,5 +164,53 @@ contract LendingPool is ILendingPool, Ownable {
         returns (ILendingPool.UserPosition memory)
     {
         return positions[user][asset];
+    }
+
+    function liquidate(address borrower, address debtAsset, address collateralAsset, uint256 debtToCover)
+        external
+        override
+    {
+        if (debtToCover == 0) revert InvalidAmount();
+        if (riskEngine == address(0)) revert RiskEngineNotConfigured();
+
+        // Only positions below the health-factor can be liquidated.
+        uint256 healthFactor = RiskEngine(riskEngine).getHealthFactor(borrower);
+        if (healthFactor >= 1e18) revert PositionNotLiquidatable();
+
+        // The liquidator cannot cover more debt than the borrower actually owes.
+        ILendingPool.UserPosition storage borrowerDebtPosition = positions[borrower][debtAsset];
+        if (debtToCover > borrowerDebtPosition.borrowed) revert RepayAmountExceedsDebt();
+
+        // The borrower must hold collateral in the requested collateral asset.
+        ILendingPool.UserPosition storage borrowerCollateralPosition = positions[borrower][collateralAsset];
+        if (borrowerCollateralPosition.supplied == 0) revert InsufficientCollateralForLiquidation();
+
+        // Compute the collateral to seize.
+        ProtocolConfig.AssetConfig memory collateralConfig = config.getAssetConfig(collateralAsset);
+        uint256 bonusFactor = 10_000 + collateralConfig.liquidationBonusBps;
+        uint256 debtValueUsd = RiskEngine(riskEngine).getAssetUsdValue(debtAsset, debtToCover);
+        uint256 collateralValueWithBonus = Math.mulDiv(debtValueUsd, bonusFactor, 10_000);
+        uint256 collateralToSeize =
+            RiskEngine(riskEngine).getAssetAmountForUsdValue(collateralAsset, collateralValueWithBonus);
+
+        if (collateralToSeize == 0 || collateralToSeize > borrowerCollateralPosition.supplied) {
+            revert InsufficientCollateralForLiquidation();
+        }
+
+        // update borrower position
+        borrowerDebtPosition.borrowed -= debtToCover;
+        borrowerCollateralPosition.supplied -= collateralToSeize;
+
+        // Pull debt tokens from the liquidator and reject short-paying tokens
+        IERC20 debtToken = IERC20(debtAsset);
+        uint256 poolBalanceBefore = debtToken.balanceOf(address(this));
+        debtToken.safeTransferFrom(msg.sender, address(this), debtToCover);
+        uint256 received = debtToken.balanceOf(address(this)) - poolBalanceBefore;
+        if (received != debtToCover) revert InvalidAmount();
+
+        // Send the seized collateral to the liquidator.
+        IERC20(collateralAsset).safeTransfer(msg.sender, collateralToSeize);
+
+        emit LiquidationExecuted(borrower, msg.sender, debtAsset, collateralAsset, debtToCover, collateralToSeize);
     }
 }

@@ -16,4 +16,6 @@ interface ILendingPool {
     function repay(address asset, uint256 amount) external;
 
     function getUserPosition(address user, address asset) external view returns (UserPosition memory);
+
+    function liquidate(address borrower, address debtAsset, address collateralAsset, uint256 debtToCover) external;
 }

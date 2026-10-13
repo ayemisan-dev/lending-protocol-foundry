@@ -41,4 +41,14 @@ contract MockLendingPool is ILendingPool {
     {
         return positions[user][asset];
     }
+
+    function liquidate(address borrower, address debtAsset, address collateralAsset, uint256 debtToCover)
+        external
+        pure
+        override
+    {
+        if (borrower == address(0) || debtAsset == address(0) || collateralAsset == address(0) || debtToCover == 0) {
+            revert("Invalid input");
+        }
+    }
 }

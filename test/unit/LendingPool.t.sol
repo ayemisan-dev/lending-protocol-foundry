@@ -44,11 +44,8 @@ contract LendingPoolTest is Test {
             8500, // Liquidation threshold: 85%
             500 // Liquidation bonus: 5%
         );
-
         oracleReader.setPriceFeed(address(asset), address(priceFeed));
-
         riskEngine = new RiskEngine(address(config), address(oracleReader), address(pool));
-
         pool.setProtocolConfig(address(config));
         pool.setRiskEngine(address(riskEngine));
         vm.stopPrank();
@@ -314,6 +311,23 @@ contract LendingPoolTest is Test {
         vm.stopPrank();
     }
 
+    function test_WithdrawSucceedsWhenHealthFactorRemainsAboveOne() public {
+        vm.startPrank(alice);
+        asset.mint(alice, 100 ether);
+        asset.approve(address(pool), 100 ether);
+        pool.deposit(address(asset), 100 ether);
+        pool.borrow(address(asset), 50 ether);
+        pool.withdraw(address(asset), 10 ether);
+        vm.stopPrank();
+
+        LendingPool.UserPosition memory position = pool.getUserPosition(alice, address(asset));
+
+        assertEq(asset.balanceOf(alice), 60 ether);
+        assertEq(asset.balanceOf(address(pool)), 40 ether);
+        assertEq(position.supplied, 90 ether);
+        assertEq(position.borrowed, 50 ether);
+    }
+
     function test_WithdrawRevertsWhenOraclePriceIsStale() public {
         uint256 suppliedAmount = 100 ether;
         uint256 borrowAmount = 40 ether;
@@ -348,23 +362,6 @@ contract LendingPoolTest is Test {
         assertEq(asset.balanceOf(address(pool)), poolBalanceBefore);
         assertEq(positionAfter.supplied, positionBefore.supplied);
         assertEq(positionAfter.borrowed, positionBefore.borrowed);
-    }
-
-    function test_WithdrawSucceedsWhenHealthFactorRemainsAboveOne() public {
-        vm.startPrank(alice);
-        asset.mint(alice, 100 ether);
-        asset.approve(address(pool), 100 ether);
-        pool.deposit(address(asset), 100 ether);
-        pool.borrow(address(asset), 50 ether);
-        pool.withdraw(address(asset), 10 ether);
-        vm.stopPrank();
-
-        LendingPool.UserPosition memory position = pool.getUserPosition(alice, address(asset));
-
-        assertEq(asset.balanceOf(alice), 60 ether);
-        assertEq(asset.balanceOf(address(pool)), 40 ether);
-        assertEq(position.supplied, 90 ether);
-        assertEq(position.borrowed, 50 ether);
     }
 
     function test_BorrowRevertsWhenRiskEngineIsNotConfigured() public {
@@ -861,5 +858,316 @@ contract LendingPoolTest is Test {
         vm.prank(owner);
         vm.expectRevert(LendingPool.ProtocolConfigAlreadySet.selector);
         pool.setProtocolConfig(address(config));
+    }
+
+    // Helper: Alice deposits 100 and borrows 80 (HF = 85/80 = 1.0625, healthy),
+    // then the owner lowers LTV/LT to 70%/75% so HF = 75/80 = 0.9375 (< 1).
+    function _makeAliceUndercollateralized() internal {
+        vm.startPrank(alice);
+        asset.mint(alice, 100 ether);
+        asset.approve(address(pool), 100 ether);
+        pool.deposit(address(asset), 100 ether);
+        pool.borrow(address(asset), 80 ether);
+        vm.stopPrank();
+
+        vm.prank(owner);
+        config.configureAsset(address(asset), true, 7000, 7500, 500);
+    }
+
+    function test_LiquidateSucceedsForUndercollateralizedPosition() public {
+        _makeAliceUndercollateralized();
+        address liquidator = makeAddr("liquidator");
+        vm.startPrank(liquidator);
+        asset.mint(liquidator, 40 ether);
+        asset.approve(address(pool), 40 ether);
+
+        // 40 debt * 1.05 bonus = 42 collateral tokens.
+        vm.expectEmit(true, true, true, true);
+        emit LendingPool.LiquidationExecuted(alice, liquidator, address(asset), address(asset), 40 ether, 42 ether);
+        pool.liquidate(alice, address(asset), address(asset), 40 ether);
+        vm.stopPrank();
+
+        LendingPool.UserPosition memory position = pool.getUserPosition(alice, address(asset));
+        assertEq(position.borrowed, 40 ether);
+        assertEq(position.supplied, 58 ether);
+        assertEq(asset.balanceOf(liquidator), 42 ether);
+        assertEq(asset.balanceOf(address(pool)), 18 ether);
+    }
+
+    function test_LiquidateRevertsWhenPositionIsHealthy() public {
+        vm.startPrank(alice);
+        asset.mint(alice, 100 ether);
+        asset.approve(address(pool), 100 ether);
+        pool.deposit(address(asset), 100 ether);
+        pool.borrow(address(asset), 80 ether);
+        vm.stopPrank();
+        // HF = 100 * 0.85 / 80 = 1.0625 >= 1 → not liquidatable.
+        vm.expectRevert(LendingPool.PositionNotLiquidatable.selector);
+        pool.liquidate(alice, address(asset), address(asset), 10 ether);
+    }
+
+    function test_LiquidateRevertsWhenAmountIsZero() public {
+        _makeAliceUndercollateralized();
+        vm.expectRevert(LendingPool.InvalidAmount.selector);
+        pool.liquidate(alice, address(asset), address(asset), 0);
+    }
+
+    function test_LiquidateRevertsWhenDebtExceedsBorrowedDebt() public {
+        _makeAliceUndercollateralized();
+        vm.expectRevert(LendingPool.RepayAmountExceedsDebt.selector);
+        pool.liquidate(alice, address(asset), address(asset), 81 ether);
+    }
+
+    function test_LiquidateRevertsWhenCollateralAssetIsNotSupplied() public {
+        _makeAliceUndercollateralized();
+        address unusedAsset = makeAddr("unusedCollateral");
+        vm.expectRevert(LendingPool.InsufficientCollateralForLiquidation.selector);
+        pool.liquidate(alice, address(asset), unusedAsset, 10 ether);
+    }
+
+    function test_LiquidateRevertsWhenCollateralIsInsufficient() public {
+        _makeAliceUndercollateralized();
+        // Raise the bonus to 50% so 80 debt would require 120 collateral
+        // against Alice's 100 supplied → revert.
+        vm.prank(owner);
+        config.configureAsset(address(asset), true, 7000, 7500, 5000);
+        vm.expectRevert(LendingPool.InsufficientCollateralForLiquidation.selector);
+        pool.liquidate(alice, address(asset), address(asset), 80 ether);
+    }
+
+    function test_LiquidateWithSixDecimalCollateralUsesCorrectTokenScale() public {
+        // Alice supplies 100 USDC (6 dec, $100) and borrows 80 mUSDC (18 dec, $80).
+        MockERC20SixDecimals usdc = new MockERC20SixDecimals();
+        MockAggregatorV3 usdcFeed = new MockAggregatorV3(8, 1e8, 1, block.timestamp, 1);
+        vm.startPrank(owner);
+        config.configureAsset(address(usdc), true, 8000, 8500, 500);
+        oracleReader.setPriceFeed(address(usdc), address(usdcFeed));
+        vm.stopPrank();
+
+        vm.startPrank(alice);
+        usdc.mint(alice, 100e6); //100 USDC
+        usdc.approve(address(pool), 100e6);
+        pool.deposit(address(usdc), 100e6);
+        vm.stopPrank();
+
+        asset.mint(address(pool), 80 ether);
+        vm.prank(alice);
+        pool.borrow(address(asset), 80 ether);
+
+        // HF = 100 * 0.75 / 80 = 0.9375 → liquidatable.
+        vm.prank(owner);
+        config.configureAsset(address(usdc), true, 7000, 7500, 500);
+
+        address liquidator = makeAddr("liquidator");
+        vm.startPrank(liquidator);
+        asset.mint(liquidator, 40 ether);
+        asset.approve(address(pool), 40 ether);
+        pool.liquidate(alice, address(asset), address(usdc), 40 ether);
+        vm.stopPrank();
+
+        LendingPool.UserPosition memory debtPos = pool.getUserPosition(alice, address(asset));
+        LendingPool.UserPosition memory collPos = pool.getUserPosition(alice, address(usdc));
+
+        // 40 debt * 1.05 bonus = 42 USDC; 6-decimal scale must be applied.
+        assertEq(debtPos.borrowed, 40 ether);
+        assertEq(collPos.supplied, 58e6);
+        assertEq(usdc.balanceOf(liquidator), 42e6); //42 USDC
+        assertEq(usdc.balanceOf(address(pool)), 58e6);
+        assertEq(asset.balanceOf(address(pool)), 40 ether);
+    }
+
+    function test_LiquidateRevertsWhenRiskEngineIsNotConfigured() public {
+        LendingPool freshPool = new LendingPool(owner);
+        vm.prank(owner);
+        freshPool.setProtocolConfig(address(config));
+        vm.expectRevert(LendingPool.RiskEngineNotConfigured.selector);
+        freshPool.liquidate(alice, address(asset), address(asset), 1 ether);
+    }
+
+    function test_LiquidateRevertsAtExactHealthFactorBoundary() public {
+        // HF = 100 * 0.85 / 85 = 1.0 exactly → must not be liquidatable.
+        vm.prank(owner);
+        config.configureAsset(address(asset), true, 8500, 8500, 500);
+        vm.startPrank(alice);
+        asset.mint(alice, 100 ether);
+        asset.approve(address(pool), 100 ether);
+        pool.deposit(address(asset), 100 ether);
+        pool.borrow(address(asset), 85 ether);
+
+        vm.expectRevert(LendingPool.PositionNotLiquidatable.selector);
+        pool.liquidate(alice, address(asset), address(asset), 1 ether);
+        vm.stopPrank();
+    }
+
+    function test_LiquidateWithFullDebtRepaymentClearsBorrowed() public {
+        _makeAliceUndercollateralized(); // 100 supplied, 80 borrowed, HF < 1
+
+        address liquidator = makeAddr("liquidatorFull");
+        vm.startPrank(liquidator);
+        asset.mint(liquidator, 80 ether);
+        asset.approve(address(pool), 80 ether);
+        pool.liquidate(alice, address(asset), address(asset), 80 ether);
+        vm.stopPrank();
+
+        LendingPool.UserPosition memory position = pool.getUserPosition(alice, address(asset));
+        assertEq(position.borrowed, 0);
+        // 80 debt * 1.05 = 84 collateral seized → 100 - 84 = 16.
+        assertEq(position.supplied, 16 ether);
+    }
+
+    function test_LiquidateRevertsOnShortPayingDebtToken() public {
+        FeeOnTransferMock feeToken = new FeeOnTransferMock(); // txFee = 10
+        MockAggregatorV3 shortFeed = new MockAggregatorV3(8, 1e8, 1, block.timestamp, 1);
+
+        vm.startPrank(owner);
+        config.configureAsset(address(feeToken), true, 8000, 8500, 500);
+        oracleReader.setPriceFeed(address(feeToken), address(shortFeed));
+        vm.stopPrank();
+
+        // Alice deposits mUSDC collateral and borrows shortDebt.
+        vm.startPrank(alice);
+        asset.mint(alice, 100 ether);
+        asset.approve(address(pool), 100 ether);
+        pool.deposit(address(asset), 100 ether);
+        vm.stopPrank();
+
+        feeToken.mint(address(pool), 80 ether);
+        vm.prank(alice);
+        pool.borrow(address(feeToken), 80 ether);
+
+        // Make position liquidatable by tightening collateral parameters.
+        vm.prank(owner);
+        config.configureAsset(address(asset), true, 7000, 7500, 500);
+
+        address liquidator = makeAddr("liquidatorShort");
+        vm.startPrank(liquidator);
+        feeToken.mint(liquidator, 40 ether);
+        feeToken.approve(address(pool), 40 ether);
+
+        vm.expectRevert(LendingPool.InvalidAmount.selector);
+        pool.liquidate(alice, address(feeToken), address(asset), 40 ether);
+        vm.stopPrank();
+
+        // Position and balances must be unchanged after the revert.
+        LendingPool.UserPosition memory debtPos = pool.getUserPosition(alice, address(feeToken));
+        LendingPool.UserPosition memory collPos = pool.getUserPosition(alice, address(asset));
+        assertEq(debtPos.borrowed, 80 ether);
+        assertEq(collPos.supplied, 100 ether);
+    }
+
+    function test_WithdrawRevertsLeaveSuppliedUnchanged() public {
+        vm.startPrank(alice);
+        asset.mint(alice, 100 ether);
+        asset.approve(address(pool), 100 ether);
+        pool.deposit(address(asset), 100 ether);
+        pool.borrow(address(asset), 70 ether);
+
+        // HF after withdrawing 30 would be 0.85 < 1 → revert.
+        vm.expectRevert(LendingPool.HealthFactorTooLow.selector);
+        pool.withdraw(address(asset), 30 ether);
+        vm.stopPrank();
+
+        LendingPool.UserPosition memory position = pool.getUserPosition(alice, address(asset));
+        assertEq(position.supplied, 100 ether);
+        assertEq(position.borrowed, 70 ether);
+        assertEq(asset.balanceOf(alice), 70 ether);
+        assertEq(asset.balanceOf(address(pool)), 30 ether);
+    }
+
+    function test_BorrowRevertsOnInsufficientLiquidityLeavesPositionUnchanged() public {
+        // A second asset with no liquidity in the pool, so any borrow reverts
+        // purely on the liquidity check, not on capacity.
+        MockERC20 asset2 = new MockERC20("Asset2", "A2");
+        MockAggregatorV3 feed2 = new MockAggregatorV3(8, 1e8, 1, block.timestamp, 1);
+
+        vm.startPrank(owner);
+        config.configureAsset(address(asset2), true, 8000, 8500, 500);
+        oracleReader.setPriceFeed(address(asset2), address(feed2));
+        vm.stopPrank();
+
+        vm.startPrank(alice);
+        asset.mint(alice, 100 ether);
+        asset.approve(address(pool), 100 ether);
+        pool.deposit(address(asset), 100 ether);
+
+        vm.expectRevert(LendingPool.InsufficientLiquidity.selector);
+        pool.borrow(address(asset2), 1 ether);
+        vm.stopPrank();
+
+        LendingPool.UserPosition memory position = pool.getUserPosition(alice, address(asset2));
+        assertEq(position.borrowed, 0);
+    }
+
+    function test_RepayFullDebtClearsBorrowed() public {
+        vm.startPrank(alice);
+        asset.mint(alice, 100 ether);
+        asset.approve(address(pool), 100 ether);
+        pool.deposit(address(asset), 100 ether);
+        pool.borrow(address(asset), 50 ether);
+
+        asset.approve(address(pool), 50 ether);
+        pool.repay(address(asset), 50 ether);
+        vm.stopPrank();
+
+        LendingPool.UserPosition memory position = pool.getUserPosition(alice, address(asset));
+        assertEq(position.borrowed, 0);
+        assertEq(position.supplied, 100 ether);
+    }
+
+    function test_RepayDoesNotReduceOtherBorrowerDebt() public {
+        vm.startPrank(alice);
+        asset.mint(alice, 100 ether);
+        asset.approve(address(pool), 100 ether);
+        pool.deposit(address(asset), 100 ether);
+        pool.borrow(address(asset), 50 ether);
+        vm.stopPrank();
+
+        address carol = makeAddr("carol");
+        vm.startPrank(carol);
+        asset.mint(carol, 100 ether);
+        asset.approve(address(pool), 100 ether);
+        pool.deposit(address(asset), 100 ether);
+        pool.borrow(address(asset), 30 ether);
+        asset.approve(address(pool), 30 ether);
+        pool.repay(address(asset), 30 ether);
+        vm.stopPrank();
+
+        LendingPool.UserPosition memory alicePos = pool.getUserPosition(alice, address(asset));
+        LendingPool.UserPosition memory carolPos = pool.getUserPosition(carol, address(asset));
+        assertEq(alicePos.borrowed, 50 ether);
+        assertEq(carolPos.borrowed, 0);
+    }
+
+    function test_WithdrawAcrossAssetsRespectsHealthFactor() public {
+        // Alice deposits 18-decimal `asset` as collateral and borrows 6-decimal USDC.
+        MockERC20SixDecimals usdc = new MockERC20SixDecimals();
+        MockAggregatorV3 usdcFeed = new MockAggregatorV3(8, 1e8, 1, block.timestamp, 1);
+
+        vm.startPrank(owner);
+        config.configureAsset(address(usdc), true, 8000, 8500, 500);
+        oracleReader.setPriceFeed(address(usdc), address(usdcFeed));
+        vm.stopPrank();
+
+        vm.startPrank(alice);
+        asset.mint(alice, 100 ether);
+        asset.approve(address(pool), 100 ether);
+        pool.deposit(address(asset), 100 ether);
+        vm.stopPrank();
+
+        usdc.mint(address(pool), 80e6);
+        vm.prank(alice);
+        pool.borrow(address(usdc), 80e6);
+
+        // Withdrawing 20 leaves 80 collateral → HF = 80*0.85/80 = 0.85 < 1 → revert.
+        vm.prank(alice);
+        vm.expectRevert(LendingPool.HealthFactorTooLow.selector);
+        pool.withdraw(address(asset), 20 ether);
+
+        // Withdrawing 5 leaves 95 → HF = 95*0.85/80 ≈ 1.009 > 1 → succeeds.
+        vm.prank(alice);
+        pool.withdraw(address(asset), 5 ether);
+
+        LendingPool.UserPosition memory position = pool.getUserPosition(alice, address(asset));
+        assertEq(position.supplied, 95 ether);
     }
 }

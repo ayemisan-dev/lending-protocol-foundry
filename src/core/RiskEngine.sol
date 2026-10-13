@@ -36,24 +36,18 @@ contract RiskEngine {
     function _getAssetUsdValue(address asset, uint256 amount) internal view returns (uint256) {
         ProtocolConfig.AssetConfig memory assetConfig = protocolConfig.getAssetConfig(asset);
 
-        if (!assetConfig.enabled) {
-            revert AssetNotEnabled();
-        }
+        if (!assetConfig.enabled) revert AssetNotEnabled();
 
         return _calculateUsdValue(asset, amount);
     }
 
     function _calculateUsdValue(address asset, uint256 amount) internal view returns (uint256) {
-        if (amount == 0) {
-            return 0;
-        }
+        if (amount == 0) return 0;
 
         uint8 tokenDecimals = IERC20Metadata(asset).decimals();
 
         // 10**78 exceeds uint256's maximum value.
-        if (tokenDecimals > 77) {
-            revert InvalidTokenDecimals();
-        }
+        if (tokenDecimals > 77) revert InvalidTokenDecimals();
 
         uint256 price = oracleReader.getPrice(asset);
         uint256 tokenScale = 10 ** uint256(tokenDecimals);
@@ -85,7 +79,6 @@ contract RiskEngine {
 
     function _calculateDebtUsdValue(address asset, uint256 amount) internal view returns (uint256) {
         if (amount == 0) return 0;
-
         uint8 tokenDecimals = IERC20Metadata(asset).decimals();
 
         if (tokenDecimals > 77) revert InvalidTokenDecimals();
@@ -108,9 +101,7 @@ contract RiskEngine {
 
             ILendingPool.UserPosition memory position = lendingPool.getUserPosition(user, asset);
 
-            if (position.borrowed == 0) {
-                continue;
-            }
+            if (position.borrowed == 0) continue;
 
             totalValue += _calculateDebtUsdValue(asset, position.borrowed);
         }
@@ -154,15 +145,11 @@ contract RiskEngine {
 
             ProtocolConfig.AssetConfig memory assetConfig = protocolConfig.getAssetConfig(asset);
 
-            if (!assetConfig.enabled || assetConfig.liquidationThresholdBps == 0) {
-                continue;
-            }
+            if (!assetConfig.enabled || assetConfig.liquidationThresholdBps == 0) continue;
 
             ILendingPool.UserPosition memory position = lendingPool.getUserPosition(user, asset);
 
-            if (position.supplied == 0) {
-                continue;
-            }
+            if (position.supplied == 0) continue;
 
             uint256 collateralValue = _calculateUsdValue(asset, position.supplied);
 
@@ -172,12 +159,30 @@ contract RiskEngine {
 
     function getHealthFactor(address user) external view returns (uint256) {
         uint256 totalDebtValue = _getTotalDebtValue(user);
-        if (totalDebtValue == 0) {
-            return type(uint256).max;
-        }
-
+        if (totalDebtValue == 0) return type(uint256).max;
         uint256 adjustedCollateralValue = _getLiquidationAdjustedCollateralValue(user);
-
         return Math.mulDiv(adjustedCollateralValue, 1e18, totalDebtValue);
+    }
+
+    function getAssetAmountForUsdValue(address asset, uint256 usdValue) external view returns (uint256) {
+        return _getAssetAmountForUsdValue(asset, usdValue);
+    }
+
+    function _getAssetAmountForUsdValue(address asset, uint256 usdValue) internal view returns (uint256) {
+        if (usdValue == 0) return 0;
+
+        ProtocolConfig.AssetConfig memory assetConfig = protocolConfig.getAssetConfig(asset);
+
+        if (!assetConfig.enabled) revert AssetNotEnabled();
+
+        uint8 tokenDecimals = IERC20Metadata(asset).decimals();
+
+        if (tokenDecimals > 77) revert InvalidTokenDecimals();
+
+        uint256 price = oracleReader.getPrice(asset);
+        uint256 tokenScale = 10 ** uint256(tokenDecimals);
+
+        // Convert an 18-decimal USD value into the asset's native token amount.
+        return Math.mulDiv(usdValue, tokenScale, price);
     }
 }

@@ -67,7 +67,6 @@ contract RiskEngineTest is Test {
         config = new ProtocolConfig(owner);
         oracleReader = new OracleReader(owner, 1 days);
         lendingPool = new MockLendingPool();
-        riskEngine = new RiskEngine(address(config), address(oracleReader), address(lendingPool));
 
         ethToken = new MockERC20("Mock Ether", "mETH");
         usdcToken = new MockERC20SixDecimals();
@@ -83,6 +82,8 @@ contract RiskEngineTest is Test {
 
         oracleReader.setPriceFeed(address(ethToken), address(ethFeed));
         oracleReader.setPriceFeed(address(usdcToken), address(usdcFeed));
+
+        riskEngine = new RiskEngine(address(config), address(oracleReader), address(lendingPool));
         vm.stopPrank();
 
         ethToken.mint(alice, 10 ether);
@@ -641,5 +642,68 @@ contract RiskEngineTest is Test {
         // Assert: RiskEngine must not calculate HF without debt pricing.
         vm.expectRevert(OracleReader.PriceFeedNotConfigured.selector);
         riskEngine.getHealthFactor(alice);
+    }
+
+    function test_GetAssetAmountForUsdValueReturnsZeroForZeroUsdValue() public view {
+        assertEq(riskEngine.getAssetAmountForUsdValue(address(ethToken), 0), 0);
+    }
+
+    function test_GetAssetAmountForUsdValueFor18DecimalToken() public {
+        MockERC20 eth = new MockERC20("Mock ETH", "meth"); //18 decimal token
+        MockAggregatorV3 feed = new MockAggregatorV3(18, 1e18, 1, block.timestamp, 1);
+        vm.startPrank(owner);
+        config.configureAsset(address(eth), true, 8000, 8500, 500);
+        oracleReader.setPriceFeed(address(eth), address(feed));
+        vm.stopPrank();
+        // $250 at $1/token → 250e18.
+        uint256 amount = riskEngine.getAssetAmountForUsdValue(address(eth), 250e18);
+        assertEq(amount, 250e18);
+    }
+
+    function test_GetAssetAmountForUsdValueFor6DecimalToken() public {
+        MockAggregatorV3 feed = new MockAggregatorV3(8, 1e8, 1, block.timestamp, 1);
+        vm.startPrank(owner);
+        config.configureAsset(address(usdcToken), true, 8000, 8500, 500);
+        oracleReader.setPriceFeed(address(usdcToken), address(feed));
+        vm.stopPrank();
+        uint256 amount = riskEngine.getAssetAmountForUsdValue(address(usdcToken), 250e18);
+        assertEq(amount, 250e6); //250 USDC
+    }
+
+    function test_GetAssetAmountForUsdValueRoundsDown() public {
+        // Price = $3.00. $10 / $3 = 3.333... tokens → floor to 3.333...e18.
+        MockAggregatorV3 feed = new MockAggregatorV3(8, 3e8, 1, block.timestamp, 1);
+        vm.prank(owner);
+        oracleReader.setPriceFeed(address(ethToken), address(feed));
+        uint256 amount = riskEngine.getAssetAmountForUsdValue(address(ethToken), 10e18);
+        assertEq(amount, uint256(10 ether) / 3);
+    }
+
+    function test_GetAssetAmountForUsdValueRevertsWhenAssetIsDisabled() public {
+        MockERC20 disabled = new MockERC20("Disabled", "DIS");
+        vm.prank(owner);
+        config.configureAsset(address(disabled), false, 8000, 8500, 500);
+        vm.expectRevert(RiskEngine.AssetNotEnabled.selector);
+        riskEngine.getAssetAmountForUsdValue(address(disabled), 100e18);
+    }
+
+    function test_GetAssetAmountForUsdValueRevertsWhenPriceFeedNotConfigured() public {
+        vm.expectRevert(OracleReader.PriceFeedNotConfigured.selector);
+        riskEngine.getAssetAmountForUsdValue(address(tokenWithoutFeed), 100e18);
+    }
+
+    function test_GetHealthFactorRevertsWhenCollateralAssetHasNoPriceFeed() public {
+        // give alice a position that has real debt
+        vm.startPrank(alice);
+        _setBorrowed(alice, address(ethToken), 50 ether);
+
+        tokenWithoutFeed.mint(alice, 50 ether);
+        tokenWithoutFeed.approve(address(lendingPool), 50 ether);
+        lendingPool.deposit(address(tokenWithoutFeed), 50 ether);
+
+        // getHealthFactor reads tokenWithoutFeed's price → revert.
+        vm.expectRevert(OracleReader.PriceFeedNotConfigured.selector);
+        riskEngine.getHealthFactor(alice);
+        vm.stopPrank();
     }
 }
