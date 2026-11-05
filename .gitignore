@@ -2,6 +2,7 @@ out/
 cache/
 broadcast/
 artifacts/
+bin/
 
 .env
 .env.*
