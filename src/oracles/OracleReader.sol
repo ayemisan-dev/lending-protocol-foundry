@@ -44,7 +44,6 @@ contract OracleReader is Ownable {
         } catch {
             revert InvalidPriceFeed();
         }
-
         emit PriceFeedUpdated(asset, priceFeed_);
         priceFeeds[asset] = AggregatorV3Interface(priceFeed_);
     }
@@ -67,7 +66,9 @@ contract OracleReader is Ownable {
 
         if (answer <= 0) revert InvalidPrice();
         if (roundId == 0 || answeredInRound < roundId) revert InvalidRound();
-        if (updatedAt == 0 || updatedAt > block.timestamp) revert InvalidTimestamp();
+        if (updatedAt == 0 || updatedAt > block.timestamp) {
+            revert InvalidTimestamp();
+        }
         if (block.timestamp - updatedAt > maxPriceAge) revert StalePrice();
 
         uint8 feedDecimals = priceFeed.decimals();
@@ -80,7 +81,9 @@ contract OracleReader is Ownable {
 
         uint256 scale = 10 ** uint256(18 - feedDecimals);
 
-        if (price > type(uint256).max / scale) revert PriceNormalizationOverflow();
+        if (price > type(uint256).max / scale) {
+            revert PriceNormalizationOverflow();
+        }
 
         return price * scale;
     }

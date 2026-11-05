@@ -87,7 +87,7 @@ contract LendingPoolFuzzTest is Test {
     {
         suppliedAmount = bound(suppliedAmount, 1 ether, 1_000_000 ether);
         // Bound the borrow to LTV so the borrow step itself always succeeds.
-        borrowAmount = bound(borrowAmount, 0, suppliedAmount * 8000 / 10_000);
+        borrowAmount = bound(borrowAmount, 0, (suppliedAmount * 8000) / 10_000);
         withdrawAmount = bound(withdrawAmount, 1, suppliedAmount);
 
         asset.mint(address(pool), 10_000_000 ether);
@@ -152,7 +152,7 @@ contract LendingPoolFuzzTest is Test {
         vm.stopPrank();
 
         // seized amount is exactly debtToCover * 1.05 with floor rounding.
-        uint256 expectedSeize = debtToCover * 10_500 / 10_000;
+        uint256 expectedSeize = (debtToCover * 10_500) / 10_000;
 
         ILendingPool.UserPosition memory pos = pool.getUserPosition(alice, address(asset));
         assertEq(pos.borrowed, borrowedAmount - debtToCover);
@@ -182,7 +182,7 @@ contract LendingPoolFuzzTest is Test {
         config.configureAsset(address(asset), true, 7000, 7500, bonusBps);
 
         // Cap debtToCover so the seized collateral never exceeds suppliedAmount.
-        uint256 maxDebt = suppliedAmount * 10_000 / (10_000 + bonusBps);
+        uint256 maxDebt = (suppliedAmount * 10_000) / (10_000 + bonusBps);
         uint256 upper = borrowedAmount < maxDebt ? borrowedAmount : maxDebt;
         debtToCover = bound(debtToCover, 1, upper);
 
@@ -196,7 +196,7 @@ contract LendingPoolFuzzTest is Test {
 
         // price = $1, 18-decimal, so debt USD value == debtToCover.
         // All three rounding steps are floor, so expectedSeize is exact.
-        uint256 expectedSeize = debtToCover * (10_000 + bonusBps) / 10_000;
+        uint256 expectedSeize = (debtToCover * (10_000 + bonusBps)) / 10_000;
 
         ILendingPool.UserPosition memory pos = pool.getUserPosition(alice, address(asset));
         assertEq(pos.borrowed, borrowedAmount - debtToCover);

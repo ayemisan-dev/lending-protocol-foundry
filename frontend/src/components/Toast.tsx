@@ -44,7 +44,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     return (
         <ToastContext.Provider value={{ addToast }}>
             {children}
-            {/* 仅对 Portal 渲染区做挂载保护，确保 SSR 期间不访问 document */}
+            {}
             {mounted &&
                 createPortal(
                     <div className="fixed bottom-6 right-6 z-50 flex flex-col gap-2">

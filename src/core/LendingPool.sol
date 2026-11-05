@@ -59,7 +59,9 @@ contract LendingPool is ILendingPool, Ownable {
     }
 
     function setProtocolConfig(address _config) external onlyOwner {
-        if (_config == address(0) || _config.code.length == 0) revert InvalidProtocolConfigAddress();
+        if (_config == address(0) || _config.code.length == 0) {
+            revert InvalidProtocolConfigAddress();
+        }
         if (address(config) != address(0)) revert ProtocolConfigAlreadySet();
 
         config = ProtocolConfig(_config);
@@ -119,13 +121,17 @@ contract LendingPool is ILendingPool, Ownable {
     function borrow(address asset, uint256 amount) external override {
         if (amount == 0) revert InvalidAmount();
         if (riskEngine == address(0)) revert RiskEngineNotConfigured();
-        if (IERC20(asset).balanceOf(address(this)) < amount) revert InsufficientLiquidity();
+        if (IERC20(asset).balanceOf(address(this)) < amount) {
+            revert InsufficientLiquidity();
+        }
 
         uint256 currentDebtValue = RiskEngine(riskEngine).getTotalDebtValue(msg.sender);
         uint256 additionalDebtValue = RiskEngine(riskEngine).getAssetUsdValue(asset, amount);
         uint256 maxBorrowableValue = RiskEngine(riskEngine).getMaxBorrowableValue(msg.sender);
 
-        if (currentDebtValue + additionalDebtValue > maxBorrowableValue) revert BorrowingCapacityExceeded();
+        if (currentDebtValue + additionalDebtValue > maxBorrowableValue) {
+            revert BorrowingCapacityExceeded();
+        }
 
         positions[msg.sender][asset].borrowed += amount;
         IERC20(asset).safeTransfer(msg.sender, amount);
@@ -179,11 +185,15 @@ contract LendingPool is ILendingPool, Ownable {
 
         // The liquidator cannot cover more debt than the borrower actually owes.
         ILendingPool.UserPosition storage borrowerDebtPosition = positions[borrower][debtAsset];
-        if (debtToCover > borrowerDebtPosition.borrowed) revert RepayAmountExceedsDebt();
+        if (debtToCover > borrowerDebtPosition.borrowed) {
+            revert RepayAmountExceedsDebt();
+        }
 
         // The borrower must hold collateral in the requested collateral asset.
         ILendingPool.UserPosition storage borrowerCollateralPosition = positions[borrower][collateralAsset];
-        if (borrowerCollateralPosition.supplied == 0) revert InsufficientCollateralForLiquidation();
+        if (borrowerCollateralPosition.supplied == 0) {
+            revert InsufficientCollateralForLiquidation();
+        }
 
         // Compute the collateral to seize.
         ProtocolConfig.AssetConfig memory collateralConfig = config.getAssetConfig(collateralAsset);
